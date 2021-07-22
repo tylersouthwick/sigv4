@@ -1,8 +1,9 @@
 use crate::{
     sign::encode_bytes_with_hex, Error, SigningSettings, UriEncoding, DATE_FORMAT, HMAC_256,
 };
+use std::time::SystemTime;
 use chrono::{format::ParseError, Date, DateTime, NaiveDate, NaiveDateTime, Utc};
-use http::{header::HeaderName, HeaderMap, Method, Request};
+use http::{header::HeaderName, HeaderMap, Method, Request, HeaderValue};
 use serde_urlencoded as qs;
 use std::{
     cmp::Ordering,
@@ -29,6 +30,8 @@ impl CanonicalRequest {
     pub(crate) fn from<B>(
         req: &Request<B>,
         settings: &SigningSettings,
+        security_token: Option<&str>,
+        date: SystemTime,
     ) -> Result<CanonicalRequest, Error>
     where
         B: AsRef<[u8]>,
@@ -50,15 +53,29 @@ impl CanonicalRequest {
             creq.params = qs::to_string(params)?;
         }
 
-        let mut headers = BTreeSet::new();
-        for (name, _) in req.headers() {
-            headers.insert(CanonicalHeaderName(name.clone()));
+        let mut req_headers = req.headers().clone();
+
+        //add required headers
+        if let Some(host) = req.uri().host() {
+            req_headers.insert("host", HeaderValue::from_bytes(host.as_bytes())?);
         }
-        creq.signed_headers = SignedHeaders { inner: headers };
-        creq.headers = req.headers().clone();
+        if let Some(token) = security_token {
+            req_headers.insert(crate::SignatureKey::AmzSecurityToken.header_name(), HeaderValue::from_bytes(token.as_bytes())?);
+        }
+        let date_time = DateTime::<Utc>::from(date);
+        req_headers.insert(crate::SignatureKey::AmzDate.header_name(), HeaderValue::from_bytes(date_time.fmt_aws().as_bytes())?);
+
+        creq.headers = req_headers;
         let body: &[u8] = req.body().as_ref();
         let payload = encode_bytes_with_hex(body);
         creq.payload_hash = payload;
+
+        let mut headers = BTreeSet::new();
+        for (name, value) in creq.headers.iter() {
+            headers.insert(CanonicalHeaderName(name.clone()));
+        }
+        creq.signed_headers = SignedHeaders { inner: headers };
+
         Ok(creq)
     }
 }
@@ -92,7 +109,7 @@ impl fmt::Display for CanonicalRequest {
 
 #[derive(Debug, PartialEq, Default)]
 pub(crate) struct SignedHeaders {
-    inner: BTreeSet<CanonicalHeaderName>,
+    pub(crate) inner: BTreeSet<CanonicalHeaderName>,
 }
 
 impl AsSigV4 for SignedHeaders {

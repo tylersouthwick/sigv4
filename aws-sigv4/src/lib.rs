@@ -18,7 +18,7 @@ use crate::UriEncoding::Double;
 use http::header::HeaderName;
 use sign::{calculate_signature, encode_with_hex, generate_signing_key};
 use std::time::SystemTime;
-use types::{AsSigV4, CanonicalRequest, DateTimeExt, StringToSign};
+use types::{AsSigV4, CanonicalRequest, DateTimeExt, StringToSign, SignedHeaders};
 
 pub fn sign<B>(
     req: &mut http::Request<B>,
@@ -124,7 +124,7 @@ where
         settings,
     } = config;
     // Step 1: https://docs.aws.amazon.com/en_pv/general/latest/gr/sigv4-create-canonical-request.html.
-    let creq = CanonicalRequest::from(req, &settings).unwrap();
+    let creq = CanonicalRequest::from(req, &settings, security_token, date).unwrap();
 
     // Step 2: https://docs.aws.amazon.com/en_pv/general/latest/gr/sigv4-create-string-to-sign.html.
     let encoded_creq = &encode_with_hex(creq.fmt());
@@ -136,7 +136,7 @@ where
     let signature = calculate_signature(signing_key, &sts.fmt().as_bytes());
 
     // Step 4: https://docs.aws.amazon.com/en_pv/general/latest/gr/sigv4-add-signature-to-request.html
-    let authorization = build_authorization_header(access_key, creq, sts, &signature);
+    let authorization = build_authorization_header(access_key, creq.signed_headers, sts, &signature);
     let x_azn_date = date.fmt_aws();
 
     let mut tok = security_token.map(|it| it.to_string());
@@ -427,7 +427,7 @@ mod tests {
 // Authorization: algorithm Credential=access key ID/credential scope, SignedHeaders=SignedHeaders, Signature=signature
 fn build_authorization_header(
     access_key: &str,
-    creq: CanonicalRequest,
+    signed_headers: SignedHeaders,
     sts: StringToSign,
     signature: &str,
 ) -> String {
@@ -436,7 +436,7 @@ fn build_authorization_header(
         HMAC_256,
         access_key,
         sts.scope.fmt(),
-        creq.signed_headers,
+        signed_headers,
         signature
     )
 }
